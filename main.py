@@ -375,7 +375,7 @@ Now answer the question about the supplied image.
         raise
 
 
- except Exception as error:
+except Exception as error:
     error_message = f"{type(error).__name__}: {str(error)}"
 
     print(f"Gemini API error: {error_message}", flush=True)
