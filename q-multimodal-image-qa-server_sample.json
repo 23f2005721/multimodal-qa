@@ -1,0 +1,42 @@
+{
+  "description": "Sample images for local testing. The grader uses DIFFERENT hidden images with the same categories.",
+  "endpoint_spec": {
+    "method": "POST",
+    "path": "/answer-image",
+    "content_type": "application/json",
+    "request_body": {
+      "image_base64": "<base64-encoded PNG image>",
+      "question": "<natural-language question about the image>"
+    },
+    "response_body": {
+      "answer": "<string or number answer extracted from the image>"
+    },
+    "notes": [
+      "The 'answer' field must always be a string.",
+      "For numeric answers, return the number as a string (e.g. '4089.35').",
+      "Do not include units or extra text — just the raw answer value.",
+      "Enable CORS: the grader sends requests from a Cloudflare Worker.",
+      "Use any multimodal model (e.g. Gemini, GPT-4o, Claude) or OCR pipeline."
+    ]
+  },
+  "sample_images": [
+    {
+      "image_id": "sample_001",
+      "type": "receipt",
+      "description": "A printed receipt from a grocery store listing item names, quantities, unit prices, and a total at the bottom.",
+      "sample_question": "What is the grand total on the receipt?"
+    },
+    {
+      "image_id": "sample_002",
+      "type": "bar_chart",
+      "description": "A bar chart showing monthly sales figures for a retail store. Each bar is labelled with a month name and a numeric value.",
+      "sample_question": "What is the total sales value across all months shown in the chart?"
+    },
+    {
+      "image_id": "sample_003",
+      "type": "invoice",
+      "description": "A business invoice with vendor name, invoice number, line items (description, qty, unit price, subtotal), tax, and grand total.",
+      "sample_question": "What is the invoice grand total including tax?"
+    }
+  ]
+}
