@@ -16,7 +16,6 @@ from google.genai import types
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# You can change this through a Render environment variable
 MODEL_NAME = os.getenv(
     "GEMINI_MODEL",
     "gemini-2.5-flash"
@@ -39,8 +38,6 @@ app = FastAPI(
 
 # ============================================================
 # CORS
-# Required so external graders / Cloudflare Workers can call
-# the API.
 # ============================================================
 
 app.add_middleware(
@@ -70,19 +67,33 @@ class ImageQuestionRequest(BaseModel):
 
 
 # ============================================================
-# HELPER: CLEAN BASE64 AND DETECT MIME TYPE
+# HELPER: CLEAN BASE64 AND DETECT IMAGE TYPE
 # ============================================================
 
 def process_base64_image(image_base64: str):
+    """
+    Accepts either:
+
+    1. Raw Base64:
+       iVBORw0KGgoAAA...
+
+    2. Data URL:
+       data:image/png;base64,iVBORw0KGgoAAA...
+
+    Returns:
+        image_bytes, mime_type
+    """
 
     image_base64 = image_base64.strip()
 
+    # Default MIME type
     mime_type = "image/png"
 
-    # Support data URLs such as:
-    # data:image/jpeg;base64,/9j/4AAQ...
-    if image_base64.startswith("data:"):
+    # --------------------------------------------------------
+    # Handle data URL format
+    # --------------------------------------------------------
 
+    if image_base64.startswith("data:"):
         match = re.match(
             r"data:([^;]+);base64,(.*)",
             image_base64,
@@ -97,49 +108,57 @@ def process_base64_image(image_base64: str):
         mime_type = match.group(1)
         image_base64 = match.group(2)
 
+    # --------------------------------------------------------
+    # Remove spaces and newlines from Base64
+    # --------------------------------------------------------
 
-    # Remove accidental whitespace/newlines
     image_base64 = re.sub(
         r"\s+",
         "",
         image_base64
     )
 
+    # --------------------------------------------------------
+    # Decode Base64
+    # --------------------------------------------------------
 
-    # Decode Base64 into raw image bytes
     try:
         image_bytes = base64.b64decode(
             image_base64,
             validate=True
         )
 
-    except (binascii.Error, ValueError):
+    except (binascii.Error, ValueError) as error:
         raise ValueError(
             "image_base64 is not valid Base64."
-        )
-
+        ) from error
 
     if not image_bytes:
         raise ValueError(
             "Decoded image is empty."
         )
 
+    # --------------------------------------------------------
+    # Detect common image formats
+    # --------------------------------------------------------
 
-    # Detect common image formats when no data URL was supplied
     if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
         mime_type = "image/png"
 
     elif image_bytes.startswith(b"\xff\xd8\xff"):
         mime_type = "image/jpeg"
 
-    elif image_bytes.startswith(b"GIF87a") or \
-            image_bytes.startswith(b"GIF89a"):
+    elif (
+        image_bytes.startswith(b"GIF87a")
+        or image_bytes.startswith(b"GIF89a")
+    ):
         mime_type = "image/gif"
 
-    elif image_bytes.startswith(b"RIFF") and \
-            b"WEBP" in image_bytes[:16]:
+    elif (
+        image_bytes.startswith(b"RIFF")
+        and b"WEBP" in image_bytes[:16]
+    ):
         mime_type = "image/webp"
-
 
     return image_bytes, mime_type
 
@@ -149,15 +168,17 @@ def process_base64_image(image_base64: str):
 # ============================================================
 
 def clean_answer(answer: str) -> str:
+    """
+    Cleans accidental formatting from the model response.
+    """
 
     answer = str(answer).strip()
 
-    # Remove markdown code fences
+    # Remove Markdown code fences
     answer = answer.replace("```json", "")
     answer = answer.replace("```text", "")
     answer = answer.replace("```", "")
     answer = answer.strip()
-
 
     # Remove common prefixes
     prefixes = [
@@ -166,24 +187,18 @@ def clean_answer(answer: str) -> str:
         "the answer is:",
     ]
 
-    lower_answer = answer.lower()
-
     for prefix in prefixes:
-
-        if lower_answer.startswith(prefix):
-
+        if answer.lower().startswith(prefix):
             answer = answer[len(prefix):].strip()
             break
 
-
-    # Remove surrounding quotes
+    # Remove surrounding quotation marks
     if (
         len(answer) >= 2
         and answer[0] == answer[-1]
         and answer[0] in ["'", '"']
     ):
         answer = answer[1:-1].strip()
-
 
     return answer
 
@@ -194,11 +209,11 @@ def clean_answer(answer: str) -> str:
 
 @app.get("/")
 def root():
-
     return {
         "status": "online",
         "service": "Multimodal Image QA API",
         "endpoint": "/answer-image",
+        "model": MODEL_NAME,
     }
 
 
@@ -208,7 +223,6 @@ def root():
 
 @app.get("/health")
 def health():
-
     return {
         "status": "healthy"
     }
@@ -222,11 +236,10 @@ def health():
 def answer_image(request: ImageQuestionRequest):
 
     # --------------------------------------------------------
-    # Check API key
+    # STEP 1: CHECK API KEY
     # --------------------------------------------------------
 
     if not GEMINI_API_KEY:
-
         raise HTTPException(
             status_code=500,
             detail=(
@@ -235,33 +248,31 @@ def answer_image(request: ImageQuestionRequest):
             ),
         )
 
-
     # --------------------------------------------------------
-    # Decode image
+    # STEP 2: DECODE IMAGE
     # --------------------------------------------------------
 
     try:
-
         image_bytes, mime_type = process_base64_image(
             request.image_base64
         )
 
     except ValueError as error:
-
         raise HTTPException(
             status_code=400,
             detail=str(error),
-        )
-
+        ) from error
 
     # --------------------------------------------------------
-    # Prompt
+    # STEP 3: CREATE PROMPT
     # --------------------------------------------------------
 
     prompt = f"""
 You are a highly accurate visual document question-answering system.
 
-Carefully inspect the supplied image. It may contain:
+Carefully inspect the supplied image.
+
+The image may contain:
 - bar charts
 - line charts
 - pie charts
@@ -285,10 +296,10 @@ OUTPUT RULES:
 3. Do not explain your reasoning.
 4. Do not use Markdown.
 5. Do not write "Answer:" or "The answer is".
-6. The answer must be concise.
+6. Keep the answer concise.
 7. If the requested answer is numeric, return only the number.
-8. For a numeric answer, do not include currency symbols.
-9. For a numeric answer, do not include units unless the question
+8. For numeric answers, do not include currency symbols.
+9. For numeric answers, do not include units unless the question
    specifically requires the unit as part of the answer.
 10. Carefully calculate totals, differences, averages, percentages,
     or other requested values when necessary.
@@ -310,21 +321,17 @@ March
 Now answer the question about the supplied image.
 """
 
-
     # --------------------------------------------------------
-    # Call Gemini
+    # STEP 4: CALL GEMINI
     # --------------------------------------------------------
 
     try:
-
         client = genai.Client(
             api_key=GEMINI_API_KEY
         )
 
-
         response = client.models.generate_content(
             model=MODEL_NAME,
-
             contents=[
                 types.Content(
                     role="user",
@@ -333,26 +340,25 @@ Now answer the question about the supplied image.
                             data=image_bytes,
                             mime_type=mime_type,
                         ),
-
                         types.Part.from_text(
                             text=prompt
                         ),
                     ],
                 )
             ],
-
             config=types.GenerateContentConfig(
                 temperature=0,
                 max_output_tokens=100,
             ),
         )
 
+        # ----------------------------------------------------
+        # STEP 5: GET RESPONSE TEXT
+        # ----------------------------------------------------
 
         answer = response.text
 
-
         if not answer:
-
             raise HTTPException(
                 status_code=502,
                 detail=(
@@ -361,26 +367,55 @@ Now answer the question about the supplied image.
                 ),
             )
 
+        # ----------------------------------------------------
+        # STEP 6: CLEAN ANSWER
+        # ----------------------------------------------------
 
         answer = clean_answer(answer)
 
+        if not answer:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "The multimodal model returned "
+                    "an empty answer after cleaning."
+                ),
+            )
 
-        # The assignment requires a string
+        # ----------------------------------------------------
+        # STEP 7: RETURN REQUIRED JSON
+        # ----------------------------------------------------
+
         return {
             "answer": str(answer)
         }
 
+    # --------------------------------------------------------
+    # KEEP OUR OWN HTTP ERRORS
+    # --------------------------------------------------------
 
     except HTTPException:
         raise
 
+    # --------------------------------------------------------
+    # CATCH GEMINI / NETWORK / MODEL ERRORS
+    # --------------------------------------------------------
 
-except Exception as error:
-    error_message = f"{type(error).__name__}: {str(error)}"
+    except Exception as error:
+        error_message = (
+            f"{type(error).__name__}: {str(error)}"
+        )
 
-    print(f"Gemini API error: {error_message}", flush=True)
+        # Show the real error in Render logs
+        print(
+            f"Gemini API error: {error_message}",
+            flush=True
+        )
 
-    raise HTTPException(
-        status_code=502,
-        detail=error_message
-    )
+        # TEMPORARILY return the real error for debugging.
+        # After everything works, this can be replaced with
+        # a generic error message.
+        raise HTTPException(
+            status_code=502,
+            detail=error_message
+        ) from error
